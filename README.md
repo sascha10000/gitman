@@ -35,6 +35,7 @@ gitman edit                     # open gitman.toml in $VISUAL/$EDITOR (fallback:
 gitman checkout feature-login   # git checkout the mapped branch in each listed repo
 gitman pull feature-login       # checkout, git pull --ff-only, restore previous branch
 gitman push feature-login       # checkout, git push, restore previous branch
+                                # (previews the plan and asks for confirmation)
 gitman merge feature-login      # merge each mapped branch into the repo's checked
                                 # out branch (previews and asks for confirmation)
 gitman status                   # current branch of every repo (marks dirty trees)
@@ -55,6 +56,13 @@ generated block afterwards to drop repos that don't belong to the feature.
 `pull` and `push` remember the branch that was checked out before, run the
 operation on the configured branch, and then switch back — your working state
 is restored even if the pull or push fails.
+
+`push` additionally previews the plan first: which repos get pushed (and from
+which currently checked out branch), which repos in the directory are not part
+of the super branch, and pending staged/unstaged changes per repo. It only
+executes after you type `yes`, then reports per repo whether the push worked
+and, if not, git's reason. Repo and branch names are highlighted when stdout
+is a terminal.
 
 `merge` goes the other direction: it merges each repo's mapped branch into the
 branch that is currently checked out there. It first prints the full plan

@@ -45,7 +45,7 @@ enum Command {
         /// Name of the super branch defined in gitman.toml
         name: String,
     },
-    /// Checkout the configured branch, push, then restore the previous branch
+    /// Checkout and push each configured branch (previews the plan, asks for confirmation)
     Push {
         /// Name of the super branch defined in gitman.toml
         name: String,
@@ -123,7 +123,7 @@ fn run(cli: &Cli) -> Result<bool> {
     match &cli.command {
         Command::Checkout { name } => cmd_checkout(&cli.dir, &config, name),
         Command::Pull { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Pull),
-        Command::Push { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Push),
+        Command::Push { name } => cmd_push(&cli.dir, &config, name),
         Command::Merge { name } => cmd_merge(&cli.dir, &config, name),
         Command::Status { name } => cmd_status(&cli.dir, &config, name.as_deref()),
         Command::Update { name } => cmd_update(&cli.dir, &config, name),
@@ -253,17 +253,23 @@ fn cmd_sync(root: &Path, config: &Config, name: &str, action: SyncAction) -> Res
     let repos = config.superbranch(name)?;
     let mut ok = true;
     for (repo, branch) in repos {
-        if let Err(err) = sync_repo(root, repo, branch, action) {
-            eprintln!("[{repo}] error: {err}");
-            ok = false;
+        match sync_repo(root, repo, branch, action) {
+            Ok(previous) => match action {
+                SyncAction::Pull => println!("[{repo}] pulled '{branch}' (back on '{previous}')"),
+                SyncAction::Push => println!("[{repo}] pushed '{branch}' (back on '{previous}')"),
+            },
+            Err(err) => {
+                eprintln!("[{repo}] error: {err}");
+                ok = false;
+            }
         }
     }
     Ok(ok)
 }
 
 /// Checkout the configured branch, run pull/push, then restore whatever
-/// branch (or detached commit) was checked out before.
-fn sync_repo(root: &Path, repo: &str, branch: &str, action: SyncAction) -> Result<()> {
+/// branch (or detached commit) was checked out before. Returns the restored ref.
+fn sync_repo(root: &Path, repo: &str, branch: &str, action: SyncAction) -> Result<String> {
     let path = repo_path(root, repo)?;
     let previous = git::current_ref(&path)?;
 
@@ -278,11 +284,94 @@ fn sync_repo(root: &Path, repo: &str, branch: &str, action: SyncAction) -> Resul
     }
 
     result?;
-    match action {
-        SyncAction::Pull => println!("[{repo}] pulled '{branch}' (back on '{previous}')"),
-        SyncAction::Push => println!("[{repo}] pushed '{branch}' (back on '{previous}')"),
+    Ok(previous)
+}
+
+/// Ask for explicit confirmation; only the literal word "yes" proceeds.
+fn confirm_yes(verb: &str) -> Result<bool> {
+    print!("\nType 'yes' to {verb}, anything else aborts: ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    Ok(answer.trim() == "yes")
+}
+
+/// Wrap `s` in an ANSI color when coloring is enabled.
+fn paint(s: &str, code: &str, on: bool) -> String {
+    if on {
+        format!("{code}{s}{RESET}")
+    } else {
+        s.to_string()
     }
-    Ok(())
+}
+
+fn cmd_push(root: &Path, config: &Config, name: &str) -> Result<bool> {
+    let repos = config.superbranch(name)?;
+    let color = use_color();
+    let mut ok = true;
+
+    // Preview: what gets pushed, from where, and what is still pending inside.
+    let mut plans: Vec<(&String, &String)> = Vec::new();
+    for (repo, branch) in repos {
+        let r = paint(repo, GREEN, color);
+        let b = paint(branch, YELLOW, color);
+        let state = repo_path(root, repo).and_then(|path| {
+            let current = git::current_ref(&path)?;
+            let pending = git::pending_changes(&path)?;
+            Ok((current, pending))
+        });
+        match state {
+            Ok((current, (staged, unstaged))) => {
+                let mut notes = String::new();
+                if current != *branch {
+                    notes = format!(" (checkout from '{}')", paint(&current, YELLOW, color));
+                }
+                if staged + unstaged > 0 {
+                    notes.push_str(&format!(" (pending: {staged} staged, {unstaged} unstaged!)"));
+                }
+                println!("[{r}] push '{b}'{notes}");
+                plans.push((repo, branch));
+            }
+            Err(err) => {
+                eprintln!("[{r}] error: {err} — not pushed");
+                ok = false;
+            }
+        }
+    }
+    // Repos in the parent directory that are not part of the super branch.
+    for (repo, _) in discover_repos(root)? {
+        if !repos.contains_key(&repo) {
+            println!("[{}] not in '{name}', not pushed", paint(&repo, GREEN, color));
+        }
+    }
+    if plans.is_empty() {
+        println!("nothing to push");
+        return Ok(ok);
+    }
+
+    if !confirm_yes("push")? {
+        println!("aborted, no changes made");
+        return Ok(false);
+    }
+
+    println!();
+    for (repo, branch) in plans {
+        let r = paint(repo, GREEN, color);
+        let b = paint(branch, YELLOW, color);
+        match sync_repo(root, repo, branch, SyncAction::Push) {
+            Ok(previous) => {
+                println!(
+                    "[{r}] pushed '{b}' (back on '{}')",
+                    paint(&previous, YELLOW, color)
+                );
+            }
+            Err(err) => {
+                eprintln!("[{r}] failed: {err}");
+                ok = false;
+            }
+        }
+    }
+    Ok(ok)
 }
 
 fn cmd_merge(root: &Path, config: &Config, name: &str) -> Result<bool> {
@@ -327,12 +416,7 @@ fn cmd_merge(root: &Path, config: &Config, name: &str) -> Result<bool> {
         return Ok(ok);
     }
 
-    // Explicit confirmation: only the literal word "yes" proceeds.
-    print!("\nType 'yes' to merge, anything else aborts: ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().read_line(&mut answer)?;
-    if answer.trim() != "yes" {
+    if !confirm_yes("merge")? {
         println!("aborted, no changes made");
         return Ok(false);
     }

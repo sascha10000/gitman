@@ -3,9 +3,9 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-/// Run a git command inside `repo` and return its trimmed stdout.
+/// Run a git command inside `repo` and return its stdout verbatim.
 /// Fails with git's stderr if the command exits non-zero.
-fn run(repo: &Path, args: &[&str]) -> Result<String> {
+fn run_raw(repo: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -17,7 +17,12 @@ fn run(repo: &Path, args: &[&str]) -> Result<String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git {} failed: {}", args.join(" "), stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Like `run_raw`, but with trimmed stdout — for single-value outputs.
+fn run(repo: &Path, args: &[&str]) -> Result<String> {
+    run_raw(repo, args).map(|stdout| stdout.trim().to_string())
 }
 
 pub fn is_repo(path: &Path) -> bool {
@@ -44,6 +49,30 @@ pub fn current_ref(repo: &Path) -> Result<String> {
 /// True when the working tree has uncommitted changes (staged or unstaged).
 pub fn is_dirty(repo: &Path) -> Result<bool> {
     Ok(!run(repo, &["status", "--porcelain"])?.is_empty())
+}
+
+/// Counts of (staged, unstaged) pending changes; untracked files count as unstaged.
+pub fn pending_changes(repo: &Path) -> Result<(usize, usize)> {
+    // run_raw: the leading space of a ` M file` line is the staged/unstaged marker.
+    let stdout = run_raw(repo, &["status", "--porcelain"])?;
+    let mut staged = 0;
+    let mut unstaged = 0;
+    for line in stdout.lines() {
+        let mut status = line.chars();
+        let index = status.next().unwrap_or(' ');
+        let worktree = status.next().unwrap_or(' ');
+        if index == '?' {
+            unstaged += 1;
+            continue;
+        }
+        if index != ' ' {
+            staged += 1;
+        }
+        if worktree != ' ' {
+            unstaged += 1;
+        }
+    }
+    Ok((staged, unstaged))
 }
 
 pub fn checkout(repo: &Path, branch: &str) -> Result<()> {
