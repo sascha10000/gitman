@@ -35,6 +35,8 @@ gitman edit                     # open gitman.toml in $VISUAL/$EDITOR (fallback:
 gitman checkout feature-login   # git checkout the mapped branch in each listed repo
 gitman pull feature-login       # checkout, git pull --ff-only, restore previous branch
 gitman push feature-login       # checkout, git push, restore previous branch
+gitman merge feature-login      # merge each mapped branch into the repo's checked
+                                # out branch (previews and asks for confirmation)
 gitman status                   # current branch of every repo (marks dirty trees)
 gitman status feature-login     # compare checked out branches against a super branch
 gitman build my-feature         # snapshot the checked out branches as a new super
@@ -53,6 +55,14 @@ generated block afterwards to drop repos that don't belong to the feature.
 `pull` and `push` remember the branch that was checked out before, run the
 operation on the configured branch, and then switch back — your working state
 is restored even if the pull or push fails.
+
+`merge` goes the other direction: it merges each repo's mapped branch into the
+branch that is currently checked out there. It first prints the full plan
+(what merges into what, per repo, with a dirty-tree warning) and only proceeds
+after you type `yes`. Repos already on the mapped branch or with a detached
+HEAD are skipped. Afterwards it reports each repo's state: merged, already up
+to date, or CONFLICT with the affected files — conflicts are left in the
+working tree for you to resolve and commit.
 
 Errors in one repository (dirty working tree, missing branch, diverged pull)
 are reported and the remaining repositories are still processed; the exit code

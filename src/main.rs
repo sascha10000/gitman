@@ -1,6 +1,7 @@
 mod config;
 mod git;
 
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -46,6 +47,11 @@ enum Command {
     },
     /// Checkout the configured branch, push, then restore the previous branch
     Push {
+        /// Name of the super branch defined in gitman.toml
+        name: String,
+    },
+    /// Merge a super branch's configured branches into the currently checked out branches
+    Merge {
         /// Name of the super branch defined in gitman.toml
         name: String,
     },
@@ -118,6 +124,7 @@ fn run(cli: &Cli) -> Result<bool> {
         Command::Checkout { name } => cmd_checkout(&cli.dir, &config, name),
         Command::Pull { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Pull),
         Command::Push { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Push),
+        Command::Merge { name } => cmd_merge(&cli.dir, &config, name),
         Command::Status { name } => cmd_status(&cli.dir, &config, name.as_deref()),
         Command::Update { name } => cmd_update(&cli.dir, &config, name),
         Command::List | Command::Edit | Command::Build { .. } => unreachable!("handled above"),
@@ -276,6 +283,86 @@ fn sync_repo(root: &Path, repo: &str, branch: &str, action: SyncAction) -> Resul
         SyncAction::Push => println!("[{repo}] pushed '{branch}' (back on '{previous}')"),
     }
     Ok(())
+}
+
+fn cmd_merge(root: &Path, config: &Config, name: &str) -> Result<bool> {
+    let repos = config.superbranch(name)?;
+    let mut ok = true;
+
+    // Resolve the plan: what gets merged into what, per repo.
+    struct Plan {
+        repo: String,
+        branch: String,  // configured branch (merge source)
+        current: String, // checked out branch (merge target)
+    }
+    let mut plans: Vec<Plan> = Vec::new();
+    for (repo, branch) in repos {
+        let state = repo_path(root, repo).and_then(|path| {
+            let current = git::current_branch(&path)?;
+            let dirty = git::is_dirty(&path)?;
+            Ok((current, dirty))
+        });
+        match state {
+            Ok((None, _)) => println!("[{repo}] detached HEAD, skipping"),
+            Ok((Some(current), _)) if current == *branch => {
+                println!("[{repo}] already on '{branch}', skipping");
+            }
+            Ok((Some(current), dirty)) => {
+                let dirty_mark = if dirty { " (dirty!)" } else { "" };
+                println!("[{repo}] merge '{branch}' into '{current}'{dirty_mark}");
+                plans.push(Plan {
+                    repo: repo.clone(),
+                    branch: branch.clone(),
+                    current,
+                });
+            }
+            Err(err) => {
+                eprintln!("[{repo}] error: {err}");
+                ok = false;
+            }
+        }
+    }
+    if plans.is_empty() {
+        println!("nothing to merge");
+        return Ok(ok);
+    }
+
+    // Explicit confirmation: only the literal word "yes" proceeds.
+    print!("\nType 'yes' to merge, anything else aborts: ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    if answer.trim() != "yes" {
+        println!("aborted, no changes made");
+        return Ok(false);
+    }
+
+    println!();
+    for plan in &plans {
+        let Plan { repo, branch, current } = plan;
+        let path = root.join(repo);
+        match git::merge(&path, branch)? {
+            git::MergeOutcome::Merged => println!("[{repo}] merged '{branch}' into '{current}'"),
+            git::MergeOutcome::UpToDate => println!("[{repo}] already up to date"),
+            git::MergeOutcome::Conflict => {
+                println!("[{repo}] CONFLICT merging '{branch}' — resolve, then 'git add' and 'git commit':");
+                match git::conflicted_files(&path) {
+                    Ok(files) => {
+                        for file in files {
+                            println!("    {file}");
+                        }
+                    }
+                    Err(err) => eprintln!("[{repo}] error listing conflicts: {err}"),
+                }
+                ok = false;
+            }
+            git::MergeOutcome::Failed(msg) => {
+                eprintln!("[{repo}] failed: {msg}");
+                ok = false;
+            }
+        }
+    }
+    Ok(ok)
 }
 
 fn cmd_status(root: &Path, config: &Config, name: Option<&str>) -> Result<bool> {
