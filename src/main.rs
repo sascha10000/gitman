@@ -49,8 +49,10 @@ enum Command {
         /// Name of the super branch defined in gitman.toml
         name: String,
     },
-    /// List the super branches defined in gitman.toml
+    /// Print the active gitman.toml
     List,
+    /// Open the active gitman.toml in the default editor ($VISUAL/$EDITOR, falls back to vi)
+    Edit,
     /// Show the current branch of every repo, or compare against a super branch
     Status {
         /// Optional super branch to compare the checked out branches against
@@ -59,6 +61,11 @@ enum Command {
     /// Create a super branch from the currently checked out branches and append it to gitman.toml
     Build {
         /// Name for the new super branch
+        name: String,
+    },
+    /// Replace an existing super branch with the currently checked out branches
+    Update {
+        /// Name of the super branch defined in gitman.toml
         name: String,
     },
 }
@@ -93,10 +100,17 @@ fn main() -> ExitCode {
 
 /// Returns Ok(false) when individual repos failed but execution continued.
 fn run(cli: &Cli) -> Result<bool> {
-    // `build` may create gitman.toml, so a missing file is fine there.
-    if let Command::Build { name } = &cli.command {
-        let config = Config::load_or_default(&cli.dir)?;
-        return cmd_build(&cli.dir, &config, name);
+    match &cli.command {
+        // `build` may create gitman.toml, so a missing file is fine there.
+        Command::Build { name } => {
+            let config = Config::load_or_default(&cli.dir)?;
+            return cmd_build(&cli.dir, &config, name);
+        }
+        // `list` and `edit` work on the raw file, so they must not require a
+        // successful parse (`edit` is how you fix a file that no longer parses).
+        Command::List => return cmd_list(&cli.dir),
+        Command::Edit => return cmd_edit(&cli.dir),
+        _ => {}
     }
 
     let config = Config::load(&cli.dir)?;
@@ -104,26 +118,112 @@ fn run(cli: &Cli) -> Result<bool> {
         Command::Checkout { name } => cmd_checkout(&cli.dir, &config, name),
         Command::Pull { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Pull),
         Command::Push { name } => cmd_sync(&cli.dir, &config, name, SyncAction::Push),
-        Command::List => {
-            cmd_list(&config);
-            Ok(true)
-        }
         Command::Status { name } => cmd_status(&cli.dir, &config, name.as_deref()),
-        Command::Build { .. } => unreachable!("handled above"),
+        Command::Update { name } => cmd_update(&cli.dir, &config, name),
+        Command::List | Command::Edit | Command::Build { .. } => unreachable!("handled above"),
     }
 }
 
-fn cmd_list(config: &Config) {
-    if config.superbranches.is_empty() {
-        println!("no super branches defined in {}", config::CONFIG_FILE);
-        return;
-    }
-    for (name, repos) in &config.superbranches {
-        println!("{name}");
-        for (repo, branch) in repos {
-            println!("  {repo} -> {branch}");
+fn cmd_list(root: &Path) -> Result<bool> {
+    let path = root.join(config::CONFIG_FILE);
+    let content = std::fs::read_to_string(&path)
+        .map_err(|err| anyhow::anyhow!("cannot read config file {}: {err}", path.display()))?;
+    let color = use_color();
+    for line in content.lines() {
+        if color {
+            println!("{}", highlight_toml_line(line));
+        } else {
+            println!("{line}");
         }
     }
+    Ok(true)
+}
+
+/// Color only when stdout is a terminal and NO_COLOR (https://no-color.org) is unset.
+fn use_color() -> bool {
+    use std::io::IsTerminal;
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+
+/// Minimal TOML syntax highlighting: comments dim, table headers bold cyan,
+/// keys green, values yellow. Anything unrecognized passes through unchanged.
+fn highlight_toml_line(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+    if trimmed.starts_with('#') {
+        return format!("{indent}{DIM}{trimmed}{RESET}");
+    }
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        return format!("{indent}{BOLD_CYAN}{trimmed}{RESET}");
+    }
+    if let Some(eq) = find_unquoted(trimmed, '=') {
+        let (key, rest) = trimmed.split_at(eq);
+        let value = &rest[1..];
+        return format!("{indent}{GREEN}{key}{RESET}={YELLOW}{value}{RESET}");
+    }
+    line.to_string()
+}
+
+/// Byte index of the first `needle` outside a double-quoted string,
+/// so `"a=b" = "x"` splits at the right '='.
+fn find_unquoted(line: &str, needle: char) -> Option<usize> {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            c if c == needle && !in_string => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn cmd_edit(root: &Path) -> Result<bool> {
+    let path = root.join(config::CONFIG_FILE);
+    if !path.exists() {
+        bail!(
+            "config file not found: {} (run 'gitman build <name>' to create one)",
+            path.display()
+        );
+    }
+
+    // $VISUAL, then $EDITOR, then vi — the same fallback order git uses.
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "vi".to_string());
+
+    // The value may contain arguments (e.g. EDITOR="code --wait"), so run it
+    // through the shell; the path goes in as "$1" to survive spaces.
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg(&editor)
+        .arg(&path)
+        .status()
+        .map_err(|err| anyhow::anyhow!("cannot run editor '{editor}': {err}"))?;
+    if !status.success() {
+        bail!("editor '{editor}' exited with {status}");
+    }
+
+    // Warn (but keep the edit) if the file no longer parses.
+    if let Err(err) = Config::load(root) {
+        eprintln!("warning: {err:#}");
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn cmd_checkout(root: &Path, config: &Config, name: &str) -> Result<bool> {
@@ -229,9 +329,40 @@ fn cmd_status(root: &Path, config: &Config, name: Option<&str>) -> Result<bool> 
 
 fn cmd_build(root: &Path, config: &Config, name: &str) -> Result<bool> {
     if config.superbranches.contains_key(name) {
-        bail!("super branch '{name}' already exists in {}", config::CONFIG_FILE);
+        bail!(
+            "super branch '{name}' already exists in {} (use 'gitman update {name}' to overwrite it)",
+            config::CONFIG_FILE
+        );
     }
 
+    let entries = snapshot_branches(root)?;
+    config::append_superbranch(root, name, &entries)?;
+    println!("added super branch '{name}' to {}:", config::CONFIG_FILE);
+    for (repo, branch) in &entries {
+        println!("  {repo} -> {branch}");
+    }
+    Ok(true)
+}
+
+fn cmd_update(root: &Path, config: &Config, name: &str) -> Result<bool> {
+    if !config.superbranches.contains_key(name) {
+        bail!(
+            "unknown super branch '{name}' (use 'gitman build {name}' to create it)"
+        );
+    }
+
+    let entries = snapshot_branches(root)?;
+    config::update_superbranch(root, name, &entries)?;
+    println!("updated super branch '{name}' in {}:", config::CONFIG_FILE);
+    for (repo, branch) in &entries {
+        println!("  {repo} -> {branch}");
+    }
+    Ok(true)
+}
+
+/// The currently checked out branch of every git repo directly under `root`.
+/// Repos with a detached HEAD are skipped with a warning.
+fn snapshot_branches(root: &Path) -> Result<Vec<(String, String)>> {
     let mut entries = Vec::new();
     for (repo, path) in discover_repos(root)? {
         match git::current_branch(&path)? {
@@ -242,13 +373,7 @@ fn cmd_build(root: &Path, config: &Config, name: &str) -> Result<bool> {
     if entries.is_empty() {
         bail!("no git repositories with a checked out branch found in {}", root.display());
     }
-
-    config::append_superbranch(root, name, &entries)?;
-    println!("added super branch '{name}' to {}:", config::CONFIG_FILE);
-    for (repo, branch) in &entries {
-        println!("  {repo} -> {branch}");
-    }
-    Ok(true)
+    Ok(entries)
 }
 
 /// All direct subdirectories of `root` that are git repositories, sorted by name.

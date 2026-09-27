@@ -30,7 +30,8 @@ auth-service = "hotfix/42"
 Run from the parent directory (or point at it with `-C <dir>`):
 
 ```sh
-gitman list                     # show all super branches and their repos
+gitman list                     # print the active gitman.toml
+gitman edit                     # open gitman.toml in $VISUAL/$EDITOR (fallback: vi)
 gitman checkout feature-login   # git checkout the mapped branch in each listed repo
 gitman pull feature-login       # checkout, git pull --ff-only, restore previous branch
 gitman push feature-login       # checkout, git push, restore previous branch
@@ -38,6 +39,8 @@ gitman status                   # current branch of every repo (marks dirty tree
 gitman status feature-login     # compare checked out branches against a super branch
 gitman build my-feature         # snapshot the checked out branches as a new super
                                 # branch and append it to gitman.toml
+gitman update my-feature        # re-snapshot the checked out branches into an
+                                # existing super branch
 gitman --help                   # full help; also: gitman help <command>
 ```
 

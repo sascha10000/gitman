@@ -99,6 +99,63 @@ pub fn append_superbranch(root: &Path, name: &str, entries: &[(String, String)])
     Ok(())
 }
 
+/// Replace the existing `[superbranches.<name>]` block in gitman.toml with new
+/// entries. Everything outside the block (other tables, comments, formatting)
+/// is preserved; comments inside the replaced block are dropped.
+pub fn update_superbranch(root: &Path, name: &str, entries: &[(String, String)]) -> Result<()> {
+    let path = root.join(CONFIG_FILE);
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read config file {}", path.display()))?;
+
+    // The header may use a bare or a quoted key, depending on the name.
+    let headers = [
+        format!("[superbranches.{}]", toml_key(name)),
+        format!("[superbranches.{}]", toml_string(name)),
+    ];
+
+    let mut out = String::new();
+    let mut replaced = false;
+    let mut in_block = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if in_block {
+            if trimmed.starts_with('[') {
+                // Next table starts: leave the block, keep a separating blank line.
+                in_block = false;
+                out.push('\n');
+            } else {
+                continue; // drop the old block body
+            }
+        }
+        if !replaced && headers.iter().any(|header| trimmed == header) {
+            out.push_str(&format!("[superbranches.{}]\n", toml_key(name)));
+            for (repo, branch) in entries {
+                out.push_str(&format!("{} = {}\n", toml_key(repo), toml_string(branch)));
+            }
+            replaced = true;
+            in_block = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !replaced {
+        bail!(
+            "could not find a [superbranches.{}] block in {} (defined with dotted keys or unusual formatting?)",
+            toml_key(name),
+            path.display()
+        );
+    }
+
+    // Validation round-trip: never write a file gitman itself cannot parse.
+    toml::from_str::<Config>(&out)
+        .context("internal error: generated config would be invalid")?;
+
+    std::fs::write(&path, out)
+        .with_context(|| format!("cannot write config file {}", path.display()))?;
+    Ok(())
+}
+
 /// Render a TOML key: bare if possible, quoted otherwise.
 fn toml_key(key: &str) -> String {
     let bare = !key.is_empty()
