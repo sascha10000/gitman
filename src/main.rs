@@ -1,6 +1,7 @@
 mod config;
 mod git;
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -478,14 +479,17 @@ fn cmd_status(root: &Path, config: &Config, name: Option<&str>) -> Result<bool> 
                 }
             }
         }
-        // No super branch given: show every git repo in the parent directory.
+        // No super branch given: show every git repo in the parent directory,
+        // then every super branch that (at least partially) matches them.
         None => {
+            let mut current: HashMap<String, String> = HashMap::new();
             for (repo, path) in discover_repos(root)? {
                 match git::current_ref(&path) {
                     Ok(branch) => {
                         let dirty = git::is_dirty(&path).unwrap_or(false);
                         let dirty_mark = if dirty { " (dirty)" } else { "" };
                         println!("[{repo}] {branch}{dirty_mark}");
+                        current.insert(repo, branch);
                     }
                     Err(err) => {
                         eprintln!("[{repo}] error: {err}");
@@ -493,9 +497,42 @@ fn cmd_status(root: &Path, config: &Config, name: Option<&str>) -> Result<bool> 
                     }
                 }
             }
+            print_superbranch_matches(config, &current);
         }
     }
     Ok(ok)
+}
+
+/// Print every super branch whose configured branches are (at least partially)
+/// checked out right now. `current` maps repo directory name -> checked out ref.
+fn print_superbranch_matches(config: &Config, current: &HashMap<String, String>) {
+    let color = use_color();
+    let mut lines = Vec::new();
+    for (name, entries) in &config.superbranches {
+        let total = entries.len();
+        let matched = entries
+            .iter()
+            .filter(|(repo, branch)| current.get(*repo) == Some(branch))
+            .count();
+        if matched == 0 {
+            continue;
+        }
+        let name = paint(name, BOLD_CYAN, color);
+        if matched == total {
+            lines.push(format!("  {name} {}", paint("matches all", GREEN, color)));
+        } else {
+            lines.push(format!(
+                "  {name} {}",
+                paint(&format!("matches {matched} of {total}"), YELLOW, color)
+            ));
+        }
+    }
+    if !lines.is_empty() {
+        println!("\nsuper branches:");
+        for line in lines {
+            println!("{line}");
+        }
+    }
 }
 
 fn cmd_build(root: &Path, config: &Config, name: &str) -> Result<bool> {

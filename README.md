@@ -38,7 +38,9 @@ gitman push feature-login       # checkout, git push, restore previous branch
                                 # (previews the plan and asks for confirmation)
 gitman merge feature-login      # merge each mapped branch into the repo's checked
                                 # out branch (previews and asks for confirmation)
-gitman status                   # current branch of every repo (marks dirty trees)
+gitman status                   # current branch of every repo (marks dirty trees),
+                                # plus every matching super branch ("matches all"
+                                # or "matches N of X")
 gitman status feature-login     # compare checked out branches against a super branch
 gitman build my-feature         # snapshot the checked out branches as a new super
                                 # branch and append it to gitman.toml
