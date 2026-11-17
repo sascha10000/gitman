@@ -79,6 +79,24 @@ pub fn checkout(repo: &Path, branch: &str) -> Result<()> {
     run(repo, &["checkout", branch]).map(|_| ())
 }
 
+/// True when a local branch `name` exists. Only fails when git cannot be spawned.
+pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
+    // `show-ref --verify --quiet` reports "missing" through its exit code,
+    // which `run` would turn into an error — so check the status directly.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")])
+        .status()
+        .context("failed to spawn git — is git installed and on the PATH?")?;
+    Ok(status.success())
+}
+
+/// Create branch `name` at `start` and check it out.
+pub fn create_branch(repo: &Path, name: &str, start: &str) -> Result<()> {
+    run(repo, &["checkout", "-b", name, start]).map(|_| ())
+}
+
 pub fn pull(repo: &Path) -> Result<()> {
     run(repo, &["pull", "--ff-only"]).map(|_| ())
 }

@@ -46,6 +46,10 @@ gitman build my-feature         # snapshot the checked out branches as a new sup
                                 # branch and append it to gitman.toml
 gitman update my-feature        # re-snapshot the checked out branches into an
                                 # existing super branch
+gitman branch feature-login feature/oauth feature-oauth
+                                # branch every repo of feature-login into
+                                # feature/oauth and record it as super branch
+                                # feature-oauth (previews and asks for confirmation)
 gitman --help                   # full help; also: gitman help <command>
 ```
 
@@ -73,6 +77,22 @@ after you type `yes`. Repos already on the mapped branch or with a detached
 HEAD are skipped. Afterwards it reports each repo's state: merged, already up
 to date, or CONFLICT with the affected files — conflicts are left in the
 working tree for you to resolve and commit.
+
+`branch <from> <new-branch> <new-superbranch>` starts a new feature from an
+existing super branch. It first prints each repo's state:
+
+- `already in '<from>' (nothing happens)`: the old super branch already maps
+  the repo to `<new-branch>`
+- `exists but is not in '<from>' (will be checked out)`: a local branch with
+  that name already exists, so it is checked out instead of being created.
+  Check that it is the branch you mean.
+- `does not exist (will be created from '<old>')`: the branch is created from
+  the repo's branch in `<from>`
+
+Missing repos or missing start branches abort before anything changes. Once
+you type `yes`, every repo ends up with `<new-branch>` checked out, and a
+`[superbranches.<new-superbranch>]` block listing all the repos is appended to
+gitman.toml.
 
 Errors in one repository (dirty working tree, missing branch, diverged pull)
 are reported and the remaining repositories are still processed; the exit code

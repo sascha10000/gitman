@@ -75,6 +75,16 @@ enum Command {
         /// Name of the super branch defined in gitman.toml
         name: String,
     },
+    /// Branch every repo of a super branch into a new branch and record it as a
+    /// new super branch (previews the plan, asks for confirmation)
+    Branch {
+        /// Existing super branch whose branches are the starting points
+        from: String,
+        /// Branch name to create (or check out) in every repo
+        branch: String,
+        /// Name for the new super branch appended to gitman.toml
+        name: String,
+    },
 }
 
 /// What to run in a repo after checking out its configured branch.
@@ -128,6 +138,9 @@ fn run(cli: &Cli) -> Result<bool> {
         Command::Merge { name } => cmd_merge(&cli.dir, &config, name),
         Command::Status { name } => cmd_status(&cli.dir, &config, name.as_deref()),
         Command::Update { name } => cmd_update(&cli.dir, &config, name),
+        Command::Branch { from, branch, name } => {
+            cmd_branch(&cli.dir, &config, from, branch, name)
+        }
         Command::List | Command::Edit | Command::Build { .. } => unreachable!("handled above"),
     }
 }
@@ -566,6 +579,150 @@ fn cmd_update(root: &Path, config: &Config, name: &str) -> Result<bool> {
         println!("  {repo} -> {branch}");
     }
     Ok(true)
+}
+
+fn cmd_branch(root: &Path, config: &Config, from: &str, branch: &str, name: &str) -> Result<bool> {
+    let repos = config.superbranch(from)?;
+    if config.superbranches.contains_key(name) {
+        bail!(
+            "super branch '{name}' already exists in {} (pick another name)",
+            config::CONFIG_FILE
+        );
+    }
+    let color = use_color();
+
+    // Per-repo state, decided in the dry run.
+    enum BranchState {
+        /// The old super branch already maps this repo to `branch`.
+        AlreadyInOld,
+        /// `branch` exists locally but is not this repo's branch in `from`.
+        ExistsElsewhere,
+        /// `branch` does not exist yet: create it from the old branch.
+        Create,
+    }
+    struct Plan {
+        repo: String,
+        old: String,     // branch in the old super branch (start point)
+        current: String, // checked out ref right now
+        state: BranchState,
+    }
+
+    // Dry run: resolve and print every repo's state. Any error aborts before
+    // the prompt — the new block lists every repo, so a partial plan would
+    // record branches that don't exist.
+    let mut plans: Vec<Plan> = Vec::new();
+    let mut errors = 0;
+    for (repo, old) in repos {
+        let r = paint(repo, GREEN, color);
+        let b = paint(branch, YELLOW, color);
+        let state = repo_path(root, repo).and_then(|path| {
+            let state = if old == branch {
+                BranchState::AlreadyInOld
+            } else if git::branch_exists(&path, branch)? {
+                BranchState::ExistsElsewhere
+            } else if git::branch_exists(&path, old)? {
+                BranchState::Create
+            } else {
+                bail!("start branch '{old}' does not exist");
+            };
+            let current = git::current_ref(&path)?;
+            let pending = git::pending_changes(&path)?;
+            Ok((state, current, pending))
+        });
+        match state {
+            Ok((state, current, (staged, unstaged))) => {
+                let what = match state {
+                    BranchState::AlreadyInOld => paint(
+                        &format!("'{branch}' already in '{from}' (nothing happens)"),
+                        GREEN,
+                        color,
+                    ),
+                    BranchState::ExistsElsewhere => paint(
+                        &format!("'{branch}' exists but is not in '{from}' (will be checked out)"),
+                        YELLOW,
+                        color,
+                    ),
+                    BranchState::Create => paint(
+                        &format!("'{branch}' does not exist (will be created from '{old}')"),
+                        GREEN,
+                        color,
+                    ),
+                };
+                let mut notes = String::new();
+                if current != *branch && !matches!(state, BranchState::Create) {
+                    notes = format!(" (checkout from '{}')", paint(&current, YELLOW, color));
+                }
+                if staged + unstaged > 0 {
+                    notes.push_str(&format!(" (pending: {staged} staged, {unstaged} unstaged!)"));
+                }
+                println!("[{r}] {what}{notes}");
+                plans.push(Plan {
+                    repo: repo.clone(),
+                    old: old.clone(),
+                    current,
+                    state,
+                });
+            }
+            Err(err) => {
+                eprintln!("[{r}] error: {err} — cannot branch to '{b}'");
+                errors += 1;
+            }
+        }
+    }
+    if errors > 0 {
+        eprintln!("\n{errors} repo(s) cannot be branched, aborting — no changes made");
+        return Ok(false);
+    }
+    println!(
+        "\nwill add [superbranches.{}] with {} repo(s) -> '{}'",
+        paint(name, BOLD_CYAN, color),
+        plans.len(),
+        paint(branch, YELLOW, color)
+    );
+
+    if !confirm_yes("branch")? {
+        println!("aborted, no changes made");
+        return Ok(false);
+    }
+
+    println!();
+    let mut ok = true;
+    for plan in &plans {
+        let Plan { repo, old, current, state } = plan;
+        let r = paint(repo, GREEN, color);
+        let b = paint(branch, YELLOW, color);
+        let path = root.join(repo);
+        let result = match state {
+            BranchState::Create => git::create_branch(&path, branch, old)
+                .map(|()| format!("created '{b}' from '{}'", paint(old, YELLOW, color))),
+            _ if current == branch => Ok(format!("already on '{b}'")),
+            BranchState::AlreadyInOld => {
+                git::checkout(&path, branch).map(|()| format!("checked out '{b}'"))
+            }
+            BranchState::ExistsElsewhere => {
+                git::checkout(&path, branch).map(|()| format!("checked out existing '{b}'"))
+            }
+        };
+        match result {
+            Ok(msg) => println!("[{r}] {msg}"),
+            Err(err) => {
+                eprintln!("[{r}] failed: {err}");
+                ok = false;
+            }
+        }
+    }
+
+    // Recorded even if a repo failed above: fix it, then `gitman checkout <name>`.
+    let entries: Vec<(String, String)> = plans
+        .iter()
+        .map(|plan| (plan.repo.clone(), branch.to_string()))
+        .collect();
+    config::append_superbranch(root, name, &entries)?;
+    println!("\nadded super branch '{name}' to {}:", config::CONFIG_FILE);
+    for (repo, branch) in &entries {
+        println!("  {repo} -> {branch}");
+    }
+    Ok(ok)
 }
 
 /// The currently checked out branch of every git repo directly under `root`.
