@@ -40,8 +40,11 @@ gitman merge feature-login      # merge each mapped branch into the repo's check
                                 # out branch (previews and asks for confirmation)
 gitman status                   # current branch of every repo (marks dirty trees),
                                 # plus every matching super branch ("matches all"
-                                # or "matches N of X")
+                                # or "matches N of X", listing the repos that differ)
 gitman status feature-login     # compare checked out branches against a super branch
+gitman dirty                    # every repo with uncommitted changes, file by file,
+                                # with the reason (staged/unstaged/untracked/conflict)
+gitman dirty feature-login      # same, restricted to the repos of a super branch
 gitman build my-feature         # snapshot the checked out branches as a new super
                                 # branch and append it to gitman.toml
 gitman update my-feature        # re-snapshot the checked out branches into an

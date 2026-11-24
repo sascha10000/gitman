@@ -65,6 +65,11 @@ enum Command {
         /// Optional super branch to compare the checked out branches against
         name: Option<String>,
     },
+    /// List every repo with uncommitted changes, file by file, with the reason
+    Dirty {
+        /// Optional super branch to restrict the check to its repos
+        name: Option<String>,
+    },
     /// Create a super branch from the currently checked out branches and append it to gitman.toml
     Build {
         /// Name for the new super branch
@@ -140,6 +145,7 @@ fn run(cli: &Cli) -> Result<bool> {
         Command::Push { name } => cmd_push(&cli.dir, &config, name),
         Command::Merge { name } => cmd_merge(&cli.dir, &config, name),
         Command::Status { name } => cmd_status(&cli.dir, &config, name.as_deref()),
+        Command::Dirty { name } => cmd_dirty(&cli.dir, &config, name.as_deref()),
         Command::Update { name } => cmd_update(&cli.dir, &config, name),
         Command::Branch { from, branch, name } => {
             cmd_branch(&cli.dir, &config, from, branch, name)
@@ -174,6 +180,7 @@ const DIM: &str = "\x1b[2m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
 
 /// Minimal TOML syntax highlighting: comments dim, table headers bold cyan,
 /// keys green, values yellow. Anything unrecognized passes through unchanged.
@@ -536,11 +543,24 @@ fn print_superbranch_matches(config: &Config, current: &HashMap<String, String>)
         let name = paint(name, BOLD_CYAN, color);
         if matched == total {
             lines.push(format!("  {name} {}", paint("matches all", GREEN, color)));
-        } else {
-            lines.push(format!(
-                "  {name} {}",
-                paint(&format!("matches {matched} of {total}"), YELLOW, color)
-            ));
+            continue;
+        }
+        lines.push(format!(
+            "  {name} {}",
+            paint(&format!("matches {matched} of {total}"), YELLOW, color)
+        ));
+        // The repos that keep this super branch from matching fully.
+        for (repo, expected) in entries {
+            let r = paint(repo, GREEN, color);
+            let e = paint(expected, YELLOW, color);
+            match current.get(repo) {
+                Some(branch) if branch == expected => {}
+                Some(branch) => lines.push(format!(
+                    "      [{r}] on '{}', expected '{e}'",
+                    paint(branch, YELLOW, color)
+                )),
+                None => lines.push(format!("      [{r}] {}, expected '{e}'", paint("not found", RED, color))),
+            }
         }
     }
     if !lines.is_empty() {
@@ -549,6 +569,99 @@ fn print_superbranch_matches(config: &Config, current: &HashMap<String, String>)
             println!("{line}");
         }
     }
+}
+
+fn cmd_dirty(root: &Path, config: &Config, name: Option<&str>) -> Result<bool> {
+    let color = use_color();
+    let repos: Vec<(String, Result<PathBuf>)> = match name {
+        Some(name) => config
+            .superbranch(name)?
+            .keys()
+            .map(|repo| (repo.clone(), repo_path(root, repo)))
+            .collect(),
+        None => discover_repos(root)?
+            .into_iter()
+            .map(|(repo, path)| (repo, Ok(path)))
+            .collect(),
+    };
+
+    let mut ok = true;
+    let mut clean = 0;
+    for (repo, path) in repos {
+        let r = paint(&repo, GREEN, color);
+        let state = path.and_then(|path| {
+            let changes = git::changed_files(&path)?;
+            let branch = git::current_ref(&path)?;
+            Ok((branch, changes))
+        });
+        let (branch, changes) = match state {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("[{r}] error: {err}");
+                ok = false;
+                continue;
+            }
+        };
+        if changes.is_empty() {
+            clean += 1;
+            continue;
+        }
+
+        println!("[{r}] {} ({} file(s))", paint(&branch, YELLOW, color), changes.len());
+        let width = changes.iter().map(|c| c.path.chars().count()).max().unwrap_or(0);
+        for change in &changes {
+            let code = format!("{}{}", change.index, change.worktree);
+            println!(
+                "    {} {:width$}  {}",
+                paint(&code, DIM, color),
+                change.path,
+                describe_change(change, color)
+            );
+        }
+    }
+
+    if clean > 0 {
+        println!("{clean} clean repo(s) not shown");
+    }
+    Ok(ok)
+}
+
+/// Human-readable reason for a porcelain XY code, e.g.
+/// "staged: modified; unstaged: deleted" or "conflict: both modified".
+fn describe_change(change: &git::FileChange, color: bool) -> String {
+    if change.is_untracked() {
+        return paint("untracked", DIM, color);
+    }
+    if change.is_conflict() {
+        let what = match (change.index, change.worktree) {
+            ('D', 'D') => "both deleted",
+            ('A', 'U') => "added by us",
+            ('U', 'D') => "deleted by them",
+            ('U', 'A') => "added by them",
+            ('D', 'U') => "deleted by us",
+            ('A', 'A') => "both added",
+            _ => "both modified",
+        };
+        return paint(&format!("conflict: {what}"), RED, color);
+    }
+
+    let verb = |code: char| match code {
+        'M' => "modified".to_string(),
+        'T' => "type changed".to_string(),
+        'A' => "new file".to_string(),
+        'D' => "deleted".to_string(),
+        'R' => format!("renamed from {}", change.orig.as_deref().unwrap_or("?")),
+        'C' => format!("copied from {}", change.orig.as_deref().unwrap_or("?")),
+        other => format!("status '{other}'"),
+    };
+    let mut parts = Vec::new();
+    if change.index != ' ' {
+        parts.push(paint(&format!("staged: {}", verb(change.index)), GREEN, color));
+    }
+    if change.worktree != ' ' {
+        parts.push(paint(&format!("unstaged: {}", verb(change.worktree)), YELLOW, color));
+    }
+    parts.join("; ")
 }
 
 fn cmd_build(root: &Path, config: &Config, name: &str) -> Result<bool> {

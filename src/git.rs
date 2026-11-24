@@ -51,24 +51,66 @@ pub fn is_dirty(repo: &Path) -> Result<bool> {
     Ok(!run(repo, &["status", "--porcelain"])?.is_empty())
 }
 
-/// Counts of (staged, unstaged) pending changes; untracked files count as unstaged.
-pub fn pending_changes(repo: &Path) -> Result<(usize, usize)> {
-    // run_raw: the leading space of a ` M file` line is the staged/unstaged marker.
-    let stdout = run_raw(repo, &["status", "--porcelain"])?;
-    let mut staged = 0;
-    let mut unstaged = 0;
-    for line in stdout.lines() {
-        let mut status = line.chars();
+/// One entry of `git status --porcelain`: the two-letter XY code plus paths.
+pub struct FileChange {
+    /// X: state in the index (staged).
+    pub index: char,
+    /// Y: state in the working tree (unstaged).
+    pub worktree: char,
+    pub path: String,
+    /// Source path of a rename or copy.
+    pub orig: Option<String>,
+}
+
+impl FileChange {
+    pub fn is_untracked(&self) -> bool {
+        self.index == '?'
+    }
+
+    /// Unmerged paths: either side 'U', or both sides added / deleted.
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            (self.index, self.worktree),
+            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
+        )
+    }
+}
+
+/// Every pending change in the working tree, untracked files included.
+pub fn changed_files(repo: &Path) -> Result<Vec<FileChange>> {
+    // -z: NUL-separated, unquoted paths; a rename/copy entry is followed by its source.
+    // run_raw: the leading space of a ` M file` entry is the staged/unstaged marker.
+    let stdout = run_raw(repo, &["status", "--porcelain", "-z"])?;
+    let mut tokens = stdout.split('\0').filter(|t| !t.is_empty());
+    let mut changes = Vec::new();
+    while let Some(entry) = tokens.next() {
+        let mut status = entry.chars();
         let index = status.next().unwrap_or(' ');
         let worktree = status.next().unwrap_or(' ');
-        if index == '?' {
+        let path = entry.get(3..).unwrap_or_default().to_string();
+        let orig = if matches!(index, 'R' | 'C') {
+            tokens.next().map(str::to_string)
+        } else {
+            None
+        };
+        changes.push(FileChange { index, worktree, path, orig });
+    }
+    Ok(changes)
+}
+
+/// Counts of (staged, unstaged) pending changes; untracked files count as unstaged.
+pub fn pending_changes(repo: &Path) -> Result<(usize, usize)> {
+    let mut staged = 0;
+    let mut unstaged = 0;
+    for change in changed_files(repo)? {
+        if change.is_untracked() {
             unstaged += 1;
             continue;
         }
-        if index != ' ' {
+        if change.index != ' ' {
             staged += 1;
         }
-        if worktree != ' ' {
+        if change.worktree != ' ' {
             unstaged += 1;
         }
     }
