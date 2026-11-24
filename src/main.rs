@@ -79,10 +79,13 @@ enum Command {
     /// new super branch (previews the plan, asks for confirmation)
     Branch {
         /// Existing super branch whose branches are the starting points
+        #[arg(value_name = "FROM_SUPERBRANCH")]
         from: String,
         /// Branch name to create (or check out) in every repo
+        #[arg(value_name = "NEW_BRANCH")]
         branch: String,
         /// Name for the new super branch appended to gitman.toml
+        #[arg(value_name = "NEW_SUPERBRANCH")]
         name: String,
     },
 }
