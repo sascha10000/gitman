@@ -1,8 +1,26 @@
 # gitman
 
 Manage multiple git repositories that live in the same parent directory using
-**super branches** — named sets of (repository, branch) pairs defined in a
-`gitman.toml` file. Repositories not listed in a super branch are left untouched.
+**super branches**: named sets of (repository, branch) pairs.
+
+**One file, nothing hidden.** Everything gitman knows lives in a single
+`gitman.toml` next to your repositories. It doesn't add a database, a `.gitman/`
+folder, hooks or custom refs, and it never changes anything inside the repositories
+on its own.
+
+**Just git, repo by repo.** gitman is a thin layer over the `git` you already
+have installed. Each command goes into each repository one at a time and runs
+plain git commands there (`git checkout`, `git pull --ff-only`, `git push`,
+`git merge`, `git status`, …). There is no cross-repo magic and no shared
+state between repositories.
+
+**Fully transparent for every repo.** Since each repository only ever sees
+ordinary git commands, its history, branches and working tree look exactly as
+if you had run those commands by hand. You can mix gitman with manual git usage
+freely, inspect any repo with your usual tools, or stop using gitman at any
+time. Delete `gitman.toml` and nothing is left behind.
+
+Repositories not listed in a super branch are left untouched.
 
 ## Setup
 
