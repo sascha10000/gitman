@@ -39,21 +39,25 @@ enum Command {
     /// Checkout the configured branch in every repo of a super branch
     Checkout {
         /// Name of the super branch defined in gitman.toml
+        #[arg(value_name = "SUPERBRANCH")]
         name: String,
     },
     /// Checkout the configured branch, pull, then restore the previous branch
     Pull {
         /// Name of the super branch defined in gitman.toml
+        #[arg(value_name = "SUPERBRANCH")]
         name: String,
     },
     /// Checkout and push each configured branch (previews the plan, asks for confirmation)
     Push {
         /// Name of the super branch defined in gitman.toml
+        #[arg(value_name = "SUPERBRANCH")]
         name: String,
     },
     /// Merge a super branch's configured branches into the currently checked out branches
     Merge {
         /// Name of the super branch defined in gitman.toml
+        #[arg(value_name = "SUPERBRANCH")]
         name: String,
     },
     /// Print the active gitman.toml
@@ -63,21 +67,25 @@ enum Command {
     /// Show the current branch of every repo, or compare against a super branch
     Status {
         /// Optional super branch to compare the checked out branches against
+        #[arg(value_name = "SUPERBRANCH")]
         name: Option<String>,
     },
     /// List every repo with uncommitted changes, file by file, with the reason
     Dirty {
         /// Optional super branch to restrict the check to its repos
+        #[arg(value_name = "SUPERBRANCH")]
         name: Option<String>,
     },
     /// Create a super branch from the currently checked out branches and append it to gitman.toml
     Build {
         /// Name for the new super branch
+        #[arg(value_name = "NEW_SUPERBRANCH")]
         name: String,
     },
     /// Replace an existing super branch with the currently checked out branches
     Update {
         /// Name of the super branch defined in gitman.toml
+        #[arg(value_name = "SUPERBRANCH")]
         name: String,
     },
     /// Branch every repo of a super branch into a new branch and record it as a
